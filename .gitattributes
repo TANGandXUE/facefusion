@@ -1,0 +1,5 @@
+# 将所有文本文件的换行符标准化为 LF
+* text=auto
+
+# 对于 Python 文件强制使用 LF
+*.py text eol=lf
