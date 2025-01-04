@@ -3,6 +3,10 @@ import shutil
 import signal
 import sys
 from time import time
+import multiprocessing
+import subprocess
+from typing import Optional
+import os
 
 import numpy
 
@@ -28,6 +32,30 @@ from facefusion.temp_helper import clear_temp_directory, create_temp_directory, 
 from facefusion.typing import Args, ErrorCode
 from facefusion.vision import get_video_frame, pack_resolution, read_image, read_static_images, restrict_image_resolution, restrict_trim_frame, restrict_video_fps, restrict_video_resolution, unpack_resolution
 
+api_process: Optional[multiprocessing.Process] = None
+
+def start_api_server(host: str, port: int) -> None:
+	"""启动API服务器"""
+	# 使用环境变量传递配置
+	env = os.environ.copy()
+	env['API_HOST'] = host
+	env['API_PORT'] = str(port)
+
+	# 使用Popen非阻塞启动
+	subprocess.Popen(
+		[sys.executable, '-m', 'api.main'],
+		env=env,
+		stdout=subprocess.PIPE,
+		stderr=subprocess.PIPE
+	)
+
+def stop_api_server() -> None:
+	"""停止API服务器"""
+	global api_process
+	if api_process and api_process.is_alive():
+			api_process.terminate()
+			api_process.join()
+			api_process = None
 
 def cli() -> None:
 	signal.signal(signal.SIGINT, lambda signal_number, frame: graceful_exit(0))
@@ -47,44 +75,71 @@ def cli() -> None:
 
 
 def route(args : Args) -> None:
-	system_memory_limit = state_manager.get_item('system_memory_limit')
-	if system_memory_limit and system_memory_limit > 0:
-		limit_system_memory(system_memory_limit)
-	if state_manager.get_item('command') == 'force-download':
-		error_code = force_download()
-		return conditional_exit(error_code)
-	if state_manager.get_item('command') in [ 'job-list', 'job-create', 'job-submit', 'job-submit-all', 'job-delete', 'job-delete-all', 'job-add-step', 'job-remix-step', 'job-insert-step', 'job-remove-step' ]:
-		if not job_manager.init_jobs(state_manager.get_item('jobs_path')):
-			hard_exit(1)
-		error_code = route_job_manager(args)
-		hard_exit(error_code)
-	if not pre_check():
-		return conditional_exit(2)
-	if state_manager.get_item('command') == 'run':
-		import facefusion.uis.core as ui
+	global api_process
 
-		if not common_pre_check() or not processors_pre_check():
+	try:
+		# 系统内存限制检查
+		system_memory_limit = state_manager.get_item('system_memory_limit')
+		if system_memory_limit and system_memory_limit > 0:
+			limit_system_memory(system_memory_limit)
+
+		# 处理特殊命令
+		if state_manager.get_item('command') == 'force-download':
+			error_code = force_download()
+			return conditional_exit(error_code)
+		if state_manager.get_item('command') in [ 'job-list', 'job-create', 'job-submit', 'job-submit-all', 'job-delete', 'job-delete-all', 'job-add-step', 'job-remix-step', 'job-insert-step', 'job-remove-step' ]:
+			if not job_manager.init_jobs(state_manager.get_item('jobs_path')):
+				hard_exit(1)
+			error_code = route_job_manager(args)
+			hard_exit(error_code)
+
+		# 基本检查
+		if not pre_check():
 			return conditional_exit(2)
-		for ui_layout in ui.get_ui_layouts_modules(state_manager.get_item('ui_layouts')):
-			if not ui_layout.pre_check():
+
+		# 处理主要命令
+		if args.get('command') == 'run':
+			import facefusion.uis.core as ui
+
+			# 启动API服务器（如果启用）
+			if args.get('api_server'):
+				logger.info('Starting API server...', __name__)
+				api_process = multiprocessing.Process(
+					target=start_api_server,
+					args=(args.get('api_host'), args.get('api_port')),
+					daemon=True
+				)
+				api_process.start()
+				logger.info(f"API server started at http://{args.get('api_host')}:{args.get('api_port')}", __name__)
+
+			# 启动Gradio UI
+			if not common_pre_check() or not processors_pre_check():
 				return conditional_exit(2)
-		ui.init()
-		ui.launch()
-	if state_manager.get_item('command') == 'headless-run':
-		if not job_manager.init_jobs(state_manager.get_item('jobs_path')):
-			hard_exit(1)
-		error_core = process_headless(args)
-		hard_exit(error_core)
-	if state_manager.get_item('command') == 'batch-run':
-		if not job_manager.init_jobs(state_manager.get_item('jobs_path')):
-			hard_exit(1)
-		error_core = process_batch(args)
-		hard_exit(error_core)
-	if state_manager.get_item('command') in [ 'job-run', 'job-run-all', 'job-retry', 'job-retry-all' ]:
-		if not job_manager.init_jobs(state_manager.get_item('jobs_path')):
-			hard_exit(1)
-		error_code = route_job_runner()
-		hard_exit(error_code)
+			for ui_layout in ui.get_ui_layouts_modules(state_manager.get_item('ui_layouts')):
+				if not ui_layout.pre_check():
+					return conditional_exit(2)
+			ui.init()
+			ui.launch()
+
+		elif args.get('command') == 'headless-run':
+			if not job_manager.init_jobs(state_manager.get_item('jobs_path')):
+				hard_exit(1)
+			error_core = process_headless(args)
+			hard_exit(error_core)
+		elif args.get('command') == 'batch-run':
+			if not job_manager.init_jobs(state_manager.get_item('jobs_path')):
+				hard_exit(1)
+			error_core = process_batch(args)
+			hard_exit(error_core)
+		elif args.get('command') in [ 'job-run', 'job-run-all', 'job-retry', 'job-retry-all' ]:
+			if not job_manager.init_jobs(state_manager.get_item('jobs_path')):
+				hard_exit(1)
+			error_code = route_job_runner()
+			hard_exit(error_code)
+	finally:
+		# 确保在主程序退出时停止API服务器
+		if api_process:
+			stop_api_server()
 
 
 def pre_check() -> bool:
@@ -481,3 +536,14 @@ def is_process_stopping() -> bool:
 		process_manager.end()
 		logger.info(wording.get('processing_stopped'), __name__)
 	return process_manager.is_pending()
+
+
+def graceful_exit(error_code : ErrorCode) -> None:
+	process_manager.stop()
+	while process_manager.is_processing():
+		sleep(0.5)
+	if state_manager.get_item('target_path'):
+		clear_temp_directory(state_manager.get_item('target_path'))
+	# 确保在退出时停止API服务器
+	stop_api_server()
+	hard_exit(error_code)

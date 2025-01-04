@@ -264,13 +264,34 @@ def collect_job_program() -> ArgumentParser:
 	return ArgumentParser(parents= [ create_execution_program(), create_download_providers_program(), create_memory_program(), create_misc_program() ], add_help = False)
 
 
+def create_api_program() -> ArgumentParser:
+	program = ArgumentParser(add_help = False)
+	group_api = program.add_argument_group('api')
+	group_api.add_argument('--api-server', help = 'Start API server', action = 'store_true', default = config.get_bool_value('api.api_server', False))
+	group_api.add_argument('--api-host', help = 'API server host', default = config.get_str_value('api.api_host', '0.0.0.0'))
+	group_api.add_argument('--api-port', help = 'API server port', type = int, default = config.get_int_value('api.api_port', 8090))
+	job_store.register_job_keys(['api_server', 'api_host', 'api_port'])
+	return program
+
+
 def create_program() -> ArgumentParser:
 	program = ArgumentParser(formatter_class = create_help_formatter_large, add_help = False)
 	program._positionals.title = 'commands'
 	program.add_argument('-v', '--version', version = metadata.get('name') + ' ' + metadata.get('version'), action = 'version')
 	sub_program = program.add_subparsers(dest = 'command')
 	# general
-	sub_program.add_parser('run', help = wording.get('help.run'), parents = [ create_config_path_program(), create_temp_path_program(), create_jobs_path_program(), create_source_paths_program(), create_target_path_program(), create_output_path_program(), collect_step_program(), create_uis_program(), collect_job_program() ], formatter_class = create_help_formatter_large)
+	sub_program.add_parser('run', help = wording.get('help.run'), parents = [
+		create_config_path_program(),
+		create_temp_path_program(),
+		create_jobs_path_program(),
+		create_source_paths_program(),
+		create_target_path_program(),
+		create_output_path_program(),
+		collect_step_program(),
+		create_uis_program(),
+		collect_job_program(),
+		create_api_program()  # 添加API服务器参数
+	], formatter_class = create_help_formatter_large)
 	sub_program.add_parser('headless-run', help = wording.get('help.headless_run'), parents = [ create_config_path_program(), create_temp_path_program(), create_jobs_path_program(), create_source_paths_program(), create_target_path_program(), create_output_path_program(), collect_step_program(), collect_job_program() ], formatter_class = create_help_formatter_large)
 	sub_program.add_parser('batch-run', help = wording.get('help.batch_run'), parents = [ create_config_path_program(), create_temp_path_program(), create_jobs_path_program(), create_source_pattern_program(), create_target_pattern_program(), create_output_pattern_program(), collect_step_program(), collect_job_program() ], formatter_class = create_help_formatter_large)
 	sub_program.add_parser('force-download', help = wording.get('help.force_download'), parents = [ create_download_providers_program(), create_download_scope_program(), create_misc_program() ], formatter_class = create_help_formatter_large)
